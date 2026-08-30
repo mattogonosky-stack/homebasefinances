@@ -471,6 +471,7 @@ function fmtD(d){return d.toLocaleDateString('en-US',{month:'short',day:'numeric
 function fmtS(d){return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});}
 function ord(n){const s=['th','st','nd','rd'],v=n%100;return n+(s[(v-20)%10]||s[v]||s[0]);}
 function sum(a){return a.reduce((s,b)=>s+(b.amount||0),0);}
+const MONTH_NAMES=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 function setAuthLoading(btnId,loading,html){const b=document.getElementById(btnId);if(!b)return;b.disabled=loading;b.innerHTML=html;}
 function showAuthErr(msg){const e=document.getElementById('auth-err');if(!e)return;e.style.color='var(--red)';e.textContent=msg;}
 
@@ -579,6 +580,12 @@ function getBills4P(p){
   return bills.filter(b=>{
     if(b.frequency==='weekly')return true; // weekly bills hit every pay period
     const sm=p.s.getMonth(),em=p.e.getMonth(),sy=p.s.getFullYear(),ey=p.e.getFullYear();
+    if(b.frequency==='annual'){
+      if(!b.dueMonth)return false;
+      const mo=b.dueMonth-1;
+      const d1=new Date(sy,mo,b.dueDay),d2=new Date(ey,mo,b.dueDay);
+      return(d1>=p.s&&d1<=p.e)||(d2>=p.s&&d2<=p.e);
+    }
     const d1=new Date(sy,sm,b.dueDay),d2=new Date(ey,em,b.dueDay);
     return(d1>=p.s&&d1<=p.e)||(sm!==em&&d2>=p.s&&d2<=p.e);
   });
@@ -689,7 +696,7 @@ async function refreshMembers(){
 async function loadBills(){
   if(!workspace||!currentUser||!myMember)return;
   const{data}=await db.from('bills').select('*').eq('workspace_id',workspace.id).order('due_day');
-  bills=(data||[]).map(b=>({id:b.id,name:b.name,amount:parseFloat(b.amount),dueDay:b.due_day,cat:b.cat,recurring:b.recurring,notes:b.notes||'',paid:b.paid||false,userId:b.user_id,tags:b.tags||[],frequency:b.frequency||'monthly'}));
+  bills=(data||[]).map(b=>({id:b.id,name:b.name,amount:parseFloat(b.amount),dueDay:b.due_day,dueMonth:b.due_month||null,cat:b.cat,recurring:b.recurring,notes:b.notes||'',paid:b.paid||false,userId:b.user_id,tags:b.tags||[],frequency:b.frequency||'monthly'}));
 }
 async function loadVacation(){
   if(!workspace||!currentUser||!myMember)return;
@@ -975,7 +982,8 @@ function getBillsDueSoon(days=3){
   return bills.filter(b=>{
     if(b.paid)return false;
     if(b.frequency==='weekly')return false; // weekly bills don't map to a single calendar day
-    const due=new Date(year,month,b.dueDay);
+    if(b.frequency==='annual'){if(!b.dueMonth||b.dueMonth!==month+1)return false;}
+    const due=new Date(year,b.frequency==='annual'?b.dueMonth-1:month,b.dueDay);
     if(due<today)return false; // already past
     const diff=(due-today)/(864e5);
     return diff<=days;
@@ -1072,6 +1080,7 @@ function rCalendar(){
   if(calFilter==='mine')src=bills.filter(b=>b.cat!=='joint'&&b.userId===currentUser.id);
   else if(calFilter==='partner'){if(!partnerSharesWith('my_bills')){src=[];}else{src=bills.filter(b=>b.cat!=='joint'&&b.userId!==currentUser.id);}}
   else if(calFilter==='joint')src=bills.filter(b=>b.cat==='joint');
+  src=src.filter(b=>b.frequency!=='annual'||b.dueMonth===m+1);
   const dm={};src.forEach(b=>{if(b.dueDay>=1&&b.dueDay<=dim){if(!dm[b.dueDay])dm[b.dueDay]=[];dm[b.dueDay].push(b);}});
   const dows=['Su','Mo','Tu','We','Th','Fr','Sa'].map(d=>`<div class="cal-dow">${d}</div>`).join('');
   let cells='';
@@ -1123,8 +1132,8 @@ function rBills(cat){
   const rows=cb.map(b=>{
     const editable=myMember?.role==='owner'||b.userId===currentUser.id||cat==='joint';
     const tagHtml=b.tags&&b.tags.length?'<div style="display:flex;gap:3px;flex-wrap:wrap;margin-top:3px">'+b.tags.map(t=>'<span style="font-size:9px;padding:1px 5px;border-radius:10px;background:var(--bg4);color:var(--txt3)">'+t+'</span>').join('')+'</div>':'';
-    const dueLbl=b.frequency==='weekly'?'Every period':ord(b.dueDay);
-    const typeBadge=b.frequency==='weekly'?`<span class="badge" style="background:var(--amberdim);color:var(--ambertxt)">Weekly</span>`:`<span class="badge" style="${b.recurring?`background:var(--${col}dim);color:var(--${col}txt)`:'background:var(--bg3);color:var(--txt2)'}">${b.recurring?'Rec':'One'}</span>`;
+    const dueLbl=b.frequency==='weekly'?'Every period':b.frequency==='annual'?(b.dueMonth?MONTH_NAMES[b.dueMonth-1]+' '+ord(b.dueDay):ord(b.dueDay)):ord(b.dueDay);
+    const typeBadge=b.frequency==='weekly'?`<span class="badge" style="background:var(--amberdim);color:var(--ambertxt)">Weekly</span>`:b.frequency==='annual'?`<span class="badge" style="background:var(--purpledim);color:var(--purpletxt)">Annual</span>`:`<span class="badge" style="${b.recurring?`background:var(--${col}dim);color:var(--${col}txt)`:'background:var(--bg3);color:var(--txt2)'}">${b.recurring?'Rec':'One'}</span>`;
     return`<tr class="${b.paid?'paid-row':''}"><td style="width:25%"><div style="font-weight:500">${b.name}</div>${tagHtml}</td><td style="width:13%;font-weight:600" class="color-${col}">${fmt(b.amount)}</td><td style="width:10%;color:var(--txt2)">${dueLbl}</td><td style="width:11%">${typeBadge}</td><td style="width:18%;color:var(--txt3);font-size:11px">${b.notes||'—'}</td><td style="width:23%;text-align:right" class="paid-cell"><div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end"><button class="paid-btn ${b.paid?'is-paid':''}" onclick="markBillPaidWithAmount('${b.id}',${b.paid},'${b.name.replace(/'/g,"\\'")}',${b.amount})">${b.paid?'<i class="ti ti-check"></i> Paid':'<i class="ti ti-circle"></i> Unpaid'}</button><div style="display:flex;gap:4px">${editable?`<button class="btn-edit-sm" onclick="openEditBill('${b.id}')"><i class="ti ti-pencil" style="font-size:10px"></i> Edit</button><button class="btn-del-sm" onclick="confirmDelBill('${b.id}','${b.name.replace(/'/g,"\\'")}')"><i class="ti ti-trash" style="font-size:10px"></i> Del</button>`:'<span style="font-size:10px;color:var(--txt3)">View only</span>'}</div></div></td></tr>`;
   }).join('');
   let totBox='';
@@ -1155,7 +1164,7 @@ async function markCatAllUnpaid(cat){
   for(const id of ids)await db.from('bills').update({paid:false}).eq('id',id).eq('workspace_id',workspace.id);
   await loadBills();render();setSynced();showToast('Reset to unpaid.');
 }
-function openAddBill(cat){billSearch='';showBillModal({id:null,name:'',amount:'',dueDay:'',cat,recurring:true,notes:'',tags:[],frequency:'monthly'});}
+function openAddBill(cat){billSearch='';showBillModal({id:null,name:'',amount:'',dueDay:'',dueMonth:null,cat,recurring:true,notes:'',tags:[],frequency:'monthly'});}
 function openEditBill(id){showBillModal({...bills.find(b=>b.id===id)});}
 async function saveBill(id){
   const nm=document.getElementById('f-nm').value.trim();
@@ -1164,7 +1173,9 @@ async function saveBill(id){
   const catRaw=document.getElementById('f-cat').value;
   const cat=catRaw==='joint'?'joint':'mine';
   const rec=document.getElementById('f-rec').value==='1';
-  const freq=document.getElementById('f-freq')?.value==='weekly'?'weekly':'monthly';
+  const freqRaw=document.getElementById('f-freq')?.value;
+  const freq=freqRaw==='weekly'?'weekly':freqRaw==='annual'?'annual':'monthly';
+  const dueMonth=freq==='annual'?parseInt(document.getElementById('f-mo')?.value):null;
   const nt=document.getElementById('f-nt').value.trim();
   // Feature #10: tags
   const tagsRaw=document.getElementById('f-tags')?.value||'';
@@ -1173,8 +1184,8 @@ async function saveBill(id){
   setSyncing();
   if(id){const existing=bills.find(b=>b.id===id);if(existing&&Math.abs(existing.amount-am)>0.01)await logBillEvent(id,nm,'amount_changed',existing.amount,am);}
   closeMod();
-  if(id){await db.from('bills').update({name:nm,amount:am,due_day:dd,cat,recurring:rec,notes:nt,tags,frequency:freq}).eq('id',id).eq('workspace_id',workspace.id);}
-  else{await db.from('bills').insert({name:nm,amount:am,due_day:dd,cat,recurring:rec,notes:nt,tags,frequency:freq,paid:false,user_id:currentUser.id,workspace_id:workspace.id});}
+  if(id){await db.from('bills').update({name:nm,amount:am,due_day:dd,due_month:dueMonth,cat,recurring:rec,notes:nt,tags,frequency:freq}).eq('id',id).eq('workspace_id',workspace.id);}
+  else{await db.from('bills').insert({name:nm,amount:am,due_day:dd,due_month:dueMonth,cat,recurring:rec,notes:nt,tags,frequency:freq,paid:false,user_id:currentUser.id,workspace_id:workspace.id});}
   await loadBills();render();setSynced();showToast('Saved!');
 }
 async function deleteBill(id){
@@ -1745,9 +1756,10 @@ function showBillModal(d){
   const isE=!!d.id;const isJoint=d.cat==='joint';
   const catSel='<option value="mine"'+(!isJoint?' selected':'')+'>My Bills (personal)</option><option value="joint"'+(isJoint?' selected':'')+'>Joint Bills (shared)</option>';
   const recSel='<option value="1"'+(d.recurring?' selected':'')+'>Recurring</option><option value="0"'+(!d.recurring?' selected':'')+'>One-time</option>';
-  const isWk=d.frequency==='weekly';
-  const freqSel='<option value="monthly"'+(!isWk?' selected':'')+'>Monthly (uses due day)</option><option value="weekly"'+(isWk?' selected':'')+'>Weekly (counted every pay period)</option>';
-  document.getElementById('mod').innerHTML='<div class="modal-bg" onclick="closeMod(event)"><div class="modal" onclick="event.stopPropagation()"><div class="modal-title">'+(isE?'Edit bill':'Add new bill')+'</div><div class="fg"><label class="fl">Bill name</label><input class="fi" id="f-nm" value="'+(d.name||'')+'" placeholder="e.g. Car payment"></div><div class="fr"><div class="fg"><label class="fl">Amount ($)</label><input class="fi" id="f-am" type="number" value="'+(d.amount||'')+'" placeholder="0.00"></div><div class="fg"><label class="fl">Due day</label><input class="fi" id="f-dd" type="number" min="1" max="31" value="'+(d.dueDay||'')+'" placeholder="1-31"></div></div><div class="fr"><div class="fg"><label class="fl">Category</label><select class="fi" id="f-cat">'+catSel+'</select></div><div class="fg"><label class="fl">Type</label><select class="fi" id="f-rec">'+recSel+'</select></div></div><div class="fg"><label class="fl">Frequency</label><select class="fi" id="f-freq">'+freqSel+'</select><div style="font-size:10px;color:var(--txt3);margin-top:3px">Weekly bills are counted in every pay period (due day is ignored). Since a pay period is 2 weeks, enter the combined 2-week total as the amount above (e.g. $150/week, enter $300).</div></div><div class="fg"><label class="fl">Tags <span style="color:var(--txt3);font-size:10px">(comma-separated, e.g. Housing, Subscriptions)</span></label><input class="fi" id="f-tags" value="'+(d.tags||[]).join(', ')+'" placeholder="e.g. Housing, Transport"></div><div class="fg"><label class="fl">Notes</label><input class="fi" id="f-nt" value="'+(d.notes||'')+'" placeholder="Optional..."></div><div class="mf"><button class="btn" onclick="closeMod()">Cancel</button><button class="btn btn-primary" onclick="saveBill('+(d.id?"'"+d.id+"'":'null')+')">'+(isE?'Save changes':'Add bill')+'</button></div></div></div>';
+  const isWk=d.frequency==='weekly';const isAn=d.frequency==='annual';
+  const freqSel='<option value="monthly"'+(!isWk&&!isAn?' selected':'')+'>Monthly (uses due day)</option><option value="weekly"'+(isWk?' selected':'')+'>Weekly (counted every pay period)</option><option value="annual"'+(isAn?' selected':'')+'>Annual (uses due day + month)</option>';
+  const moOpts=MONTH_NAMES.map((mn,i)=>'<option value="'+(i+1)+'"'+((d.dueMonth||new Date().getMonth()+1)===i+1?' selected':'')+'>'+mn+'</option>').join('');
+  document.getElementById('mod').innerHTML='<div class="modal-bg" onclick="closeMod(event)"><div class="modal" onclick="event.stopPropagation()"><div class="modal-title">'+(isE?'Edit bill':'Add new bill')+'</div><div class="fg"><label class="fl">Bill name</label><input class="fi" id="f-nm" value="'+(d.name||'')+'" placeholder="e.g. Car payment"></div><div class="fr"><div class="fg"><label class="fl">Amount ($)</label><input class="fi" id="f-am" type="number" value="'+(d.amount||'')+'" placeholder="0.00"></div><div class="fg"><label class="fl">Due day</label><input class="fi" id="f-dd" type="number" min="1" max="31" value="'+(d.dueDay||'')+'" placeholder="1-31"></div></div><div class="fr"><div class="fg"><label class="fl">Category</label><select class="fi" id="f-cat">'+catSel+'</select></div><div class="fg"><label class="fl">Type</label><select class="fi" id="f-rec">'+recSel+'</select></div></div><div class="fr"><div class="fg"><label class="fl">Frequency</label><select class="fi" id="f-freq" onchange="document.getElementById(\'f-mo-wrap\').style.display=this.value===\'annual\'?\'\':\'none\'">'+freqSel+'</select></div><div class="fg" id="f-mo-wrap" style="display:'+(isAn?'':'none')+'"><label class="fl">Due month</label><select class="fi" id="f-mo">'+moOpts+'</select></div></div><div style="font-size:10px;color:var(--txt3);margin-top:-6px;margin-bottom:6px">Weekly bills are counted in every pay period (due day is ignored; since a pay period is 2 weeks, enter the combined 2-week total). Annual bills use due day + due month and are counted in full for whichever pay period they land in — enter the full annual amount.</div><div class="fg"><label class="fl">Tags <span style="color:var(--txt3);font-size:10px">(comma-separated, e.g. Housing, Subscriptions)</span></label><input class="fi" id="f-tags" value="'+(d.tags||[]).join(', ')+'" placeholder="e.g. Housing, Transport"></div><div class="fg"><label class="fl">Notes</label><input class="fi" id="f-nt" value="'+(d.notes||'')+'" placeholder="Optional..."></div><div class="mf"><button class="btn" onclick="closeMod()">Cancel</button><button class="btn btn-primary" onclick="saveBill('+(d.id?"'"+d.id+"'":'null')+')">'+(isE?'Save changes':'Add bill')+'</button></div></div></div>';
 }
 function closeMod(e){if(!e||e.target.classList.contains('modal-bg'))document.getElementById('mod').innerHTML='';}
 
@@ -1778,7 +1790,7 @@ function buildShannonSummary(){
   if(shannonPersonal.length){
     lines.push('Your car payment:');
     shannonPersonal.forEach(b=>{
-      const dueLbl=b.frequency==='weekly'?'every period':('due the '+ord(b.dueDay));
+      const dueLbl=b.frequency==='weekly'?'every period':b.frequency==='annual'&&b.dueMonth?('due '+MONTH_NAMES[b.dueMonth-1]+' '+ord(b.dueDay)):('due the '+ord(b.dueDay));
       lines.push('  • '+b.name+' — '+fmt(b.amount)+' ('+dueLbl+')');
     });
     lines.push('');
@@ -1788,7 +1800,7 @@ function buildShannonSummary(){
     lines.push('Your half of the shared bills:');
     jointDue.forEach(b=>{
       const half=b.amount/memberCount;
-      const dueLbl=b.frequency==='weekly'?'every period':('due the '+ord(b.dueDay));
+      const dueLbl=b.frequency==='weekly'?'every period':b.frequency==='annual'&&b.dueMonth?('due '+MONTH_NAMES[b.dueMonth-1]+' '+ord(b.dueDay)):('due the '+ord(b.dueDay));
       lines.push('  • '+b.name+' — '+fmt(half)+' ('+dueLbl+')');
     });
     lines.push('');
